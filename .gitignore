@@ -1,0 +1,14 @@
+# Dataset and tensor cache
+data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
