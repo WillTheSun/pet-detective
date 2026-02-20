@@ -132,18 +132,15 @@ def main() -> None:
         st.session_state.selected_source = None
     if "last_input_id" not in st.session_state:
         st.session_state.last_input_id = None
-    if "tile_show_original" not in st.session_state:
-        st.session_state.tile_show_original = False
 
     # ── 1. Input zone ──────────────────────────────────────────────────────
-    with st.expander("📷 Add a photo", expanded=st.session_state.last_input_id is None):
-        col_up, col_cam = st.columns(2)
-        with col_up:
-            uploaded_file = st.file_uploader(
-                "Drop a photo", type=["jpg", "jpeg", "png", "webp"]
-            )
-        with col_cam:
-            camera_file = st.camera_input("Take a photo")
+    col_up, col_cam = st.columns(2)
+    with col_up:
+        uploaded_file = st.file_uploader(
+            "Upload a photo", type=["jpg", "jpeg", "png", "webp"]
+        )
+    with col_cam:
+        camera_file = st.camera_input("Take a photo")
 
     # Auto-select newly arrived user input
     if uploaded_file is not None:
@@ -196,38 +193,26 @@ def main() -> None:
     # ── 2. Gallery ─────────────────────────────────────────────────────────
     COLS_PER_ROW = 3
 
-    if tiles:
-        st.subheader("Choose a photo")
-        rows = [tiles[i:i + COLS_PER_ROW] for i in range(0, len(tiles), COLS_PER_ROW)]
-        example_num = 0
-        tile_index = 0
-        for row_tiles in rows:
-            cols = st.columns(len(row_tiles))
-            for col, tile in zip(cols, row_tiles):
-                i = tile_index
-                tile_index += 1
-                with col:
-                    st.image(get_crop(tile["image"]), use_container_width=True)
-                    is_selected = st.session_state.selected_source == tile["key"]
-                    if tile["is_user"]:
-                        btn_label = "✓" if is_selected else "Your photo"
-                    else:
+    example_tiles = [t for t in tiles if not t["is_user"]]
+
+    if example_tiles:
+        with st.expander("🖼️ Browse examples", expanded=False):
+            rows = [example_tiles[i:i + COLS_PER_ROW] for i in range(0, len(example_tiles), COLS_PER_ROW)]
+            example_num = 0
+            tile_index = 0
+            for row_tiles in rows:
+                cols = st.columns(len(row_tiles))
+                for col, tile in zip(cols, row_tiles):
+                    i = tile_index
+                    tile_index += 1
+                    with col:
+                        st.image(get_crop(tile["image"]), use_container_width=True)
+                        is_selected = st.session_state.selected_source == tile["key"]
                         example_num += 1
                         btn_label = "✓" if is_selected else f"Example {example_num}"
-                    if st.button(btn_label, key=f"tile-{i}", use_container_width=True):
-                        st.session_state.selected_source = tile["key"]
-                        st.rerun()
-                    if tile["is_user"]:
-                        view_label = "Show crop" if st.session_state.tile_show_original else "Show original"
-                        if st.button(view_label, key=f"tile-view-{i}", use_container_width=True):
-                            st.session_state.tile_show_original = not st.session_state.tile_show_original
+                        if st.button(btn_label, key=f"tile-{i}", use_container_width=True):
+                            st.session_state.selected_source = tile["key"]
                             st.rerun()
-
-        # Full-width original preview below the gallery row
-        if st.session_state.tile_show_original:
-            user_tile = next((t for t in tiles if t["is_user"]), None)
-            if user_tile:
-                st.image(user_tile["image"], use_container_width=True)
 
     # ── 3. Results ─────────────────────────────────────────────────────────
     selected_tile = next(
@@ -238,9 +223,20 @@ def main() -> None:
         return
 
     predictions = predict_top3(model, selected_tile["image"])
-    st.subheader("Top-3 predictions")
-    for label, confidence in predictions:
-        st.write(f"- **{label}**: {confidence * 100:.2f}%")
+
+    st.subheader("Results")
+    medals = ["🥇", "🥈", "🥉"]
+    for i, (label, confidence) in enumerate(predictions):
+        display_name = label.replace("_", " ").title()
+        pct = confidence * 100
+        if i == 0:
+            st.markdown(f"### {medals[i]} {display_name}")
+            st.caption(f"{pct:.1f}% confidence")
+        else:
+            st.markdown(f"**{medals[i]} {display_name}**")
+        st.progress(confidence, text=f"{pct:.1f}%")
+        if i < len(predictions) - 1:
+            st.write("")
 
 
 if __name__ == "__main__":
