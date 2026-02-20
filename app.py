@@ -90,14 +90,11 @@ def get_preprocess() -> transforms.Compose:
     )
 
 
-def square_pad(image: Image.Image, size: int = 200) -> Image.Image:
-    """Fit image inside a square canvas without cropping or distorting."""
-    image.thumbnail((size, size), Image.LANCZOS)
-    canvas = Image.new("RGB", (size, size), (240, 240, 240))
-    x = (size - image.width) // 2
-    y = (size - image.height) // 2
-    canvas.paste(image, (x, y))
-    return canvas
+def get_crop(image: Image.Image) -> Image.Image:
+    return transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+    ])(image)
 
 
 def predict_top3(model: nn.Module, image: Image.Image) -> list[tuple[str, float]]:
@@ -112,6 +109,14 @@ def predict_top3(model: nn.Module, image: Image.Image) -> list[tuple[str, float]
 
 def main() -> None:
     st.set_page_config(page_title="Pet Detective", page_icon="🐾")
+    st.markdown("""
+<style>
+@media (max-width: 640px) {
+    .block-container { padding-left: 1rem; padding-right: 1rem; }
+    img { max-width: 100%; height: auto; }
+}
+</style>
+""", unsafe_allow_html=True)
     st.title("🐾 Pet Detective")
     st.write("Upload a pet photo (or pick an example) to predict the breed.")
 
@@ -121,36 +126,118 @@ def main() -> None:
         return
 
     model = load_model()
-    uploaded_file = st.file_uploader("Choose a pet image", type=["jpg", "jpeg", "png", "webp"])
 
-    selected_example: Path | None = None
+    # ── Session state ──────────────────────────────────────────────────────
+    if "selected_source" not in st.session_state:
+        st.session_state.selected_source = None
+    if "last_input_id" not in st.session_state:
+        st.session_state.last_input_id = None
+    if "tile_show_original" not in st.session_state:
+        st.session_state.tile_show_original = False
+
+    # ── 1. Input zone ──────────────────────────────────────────────────────
+    with st.expander("📷 Add a photo", expanded=st.session_state.last_input_id is None):
+        col_up, col_cam = st.columns(2)
+        with col_up:
+            uploaded_file = st.file_uploader(
+                "Drop a photo", type=["jpg", "jpeg", "png", "webp"]
+            )
+        with col_cam:
+            camera_file = st.camera_input("Take a photo")
+
+    # Auto-select newly arrived user input
+    if uploaded_file is not None:
+        current_input_id = f"upload:{uploaded_file.name}:{uploaded_file.size}"
+    elif camera_file is not None:
+        current_input_id = f"camera:{camera_file.name}:{camera_file.size}"
+    else:
+        current_input_id = None
+
+    if current_input_id != st.session_state.last_input_id:
+        st.session_state.last_input_id = current_input_id
+        if uploaded_file is not None:
+            st.session_state.selected_source = "upload"
+        elif camera_file is not None:
+            st.session_state.selected_source = "camera"
+
+    # ── Build tile pool ────────────────────────────────────────────────────
+    tiles: list[dict] = []
+
+    if uploaded_file is not None:
+        tiles.append({
+            "key": "upload",
+            "image": Image.open(uploaded_file).convert("RGB"),
+            "is_user": True,
+        })
+    elif camera_file is not None:
+        tiles.append({
+            "key": "camera",
+            "image": Image.open(camera_file).convert("RGB"),
+            "is_user": True,
+        })
+
     if EXAMPLES_DIR.exists():
         example_paths = sorted(
-            [p for p in EXAMPLES_DIR.iterdir() if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}]
+            p for p in EXAMPLES_DIR.iterdir()
+            if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
         )
-        if example_paths:
-            st.subheader("Try an example image")
-            columns = st.columns(len(example_paths))
-            for idx, example_path in enumerate(example_paths):
-                with columns[idx]:
-                    thumb = square_pad(Image.open(example_path).convert("RGB"))
-                    st.image(thumb, use_container_width=True)
-                    if st.button(f"Example {idx + 1}", key=f"example-{idx}", use_container_width=True):
-                        selected_example = example_path
+        for p in example_paths:
+            tiles.append({
+                "key": str(p),
+                "image": Image.open(p).convert("RGB"),
+                "is_user": False,
+            })
 
-    image: Image.Image | None = None
-    if uploaded_file is not None:
-        image = Image.open(uploaded_file).convert("RGB")
-    elif selected_example is not None:
-        image = Image.open(selected_example).convert("RGB")
+    # If the saved selection no longer exists in the tile pool, reset it
+    valid_keys = {t["key"] for t in tiles}
+    if st.session_state.selected_source not in valid_keys:
+        st.session_state.selected_source = tiles[0]["key"] if tiles else None
 
-    if image is None:
+    # ── 2. Gallery ─────────────────────────────────────────────────────────
+    COLS_PER_ROW = 3
+
+    if tiles:
+        st.subheader("Choose a photo")
+        rows = [tiles[i:i + COLS_PER_ROW] for i in range(0, len(tiles), COLS_PER_ROW)]
+        example_num = 0
+        tile_index = 0
+        for row_tiles in rows:
+            cols = st.columns(len(row_tiles))
+            for col, tile in zip(cols, row_tiles):
+                i = tile_index
+                tile_index += 1
+                with col:
+                    st.image(get_crop(tile["image"]), use_container_width=True)
+                    is_selected = st.session_state.selected_source == tile["key"]
+                    if tile["is_user"]:
+                        btn_label = "✓" if is_selected else "Your photo"
+                    else:
+                        example_num += 1
+                        btn_label = "✓" if is_selected else f"Example {example_num}"
+                    if st.button(btn_label, key=f"tile-{i}", use_container_width=True):
+                        st.session_state.selected_source = tile["key"]
+                        st.rerun()
+                    if tile["is_user"]:
+                        view_label = "Show crop" if st.session_state.tile_show_original else "Show original"
+                        if st.button(view_label, key=f"tile-view-{i}", use_container_width=True):
+                            st.session_state.tile_show_original = not st.session_state.tile_show_original
+                            st.rerun()
+
+        # Full-width original preview below the gallery row
+        if st.session_state.tile_show_original:
+            user_tile = next((t for t in tiles if t["is_user"]), None)
+            if user_tile:
+                st.image(user_tile["image"], use_container_width=True)
+
+    # ── 3. Results ─────────────────────────────────────────────────────────
+    selected_tile = next(
+        (t for t in tiles if t["key"] == st.session_state.selected_source), None
+    )
+    if selected_tile is None:
         st.caption("No image selected yet.")
         return
 
-    st.image(image, caption="Input image", use_container_width=True)
-    predictions = predict_top3(model, image)
-
+    predictions = predict_top3(model, selected_tile["image"])
     st.subheader("Top-3 predictions")
     for label, confidence in predictions:
         st.write(f"- **{label}**: {confidence * 100:.2f}%")
